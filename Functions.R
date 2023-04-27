@@ -150,7 +150,7 @@ beta.bound.itt = function(lower,upper,fit.ivsacim.by_prod,data,stime,hazards,p.v
 }
 
 
-####Ivsacim #####
+####Ivsacim ##### 
 
 add.Z.pred = function(data){
   fitZ.L <- glm(formula=Z~1, family="binomial", data=data)
