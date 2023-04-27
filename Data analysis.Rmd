@@ -1,0 +1,576 @@
+---
+title: "Data analysis"
+author: "Hege Michiels"
+date: "4/27/2023"
+output: html_document
+---
+
+```{r warning=F,echo=F,message=F}
+#Install these packages first if needed
+library(ggplot2)
+library(survminer)
+library(survival)
+library(timereg)
+library(dplyr)
+```
+
+```{r message=FALSE, warning=FALSE,echo=F}
+source("~/OneDrive - UGent/Crossover/R-code/Functions.R") #Import the "Functions.R" file #VERANDEREN NAAR ONLINE LINK
+data <- read.delim("~/OneDrive - UGent/Crossover/R-code/data.txt") #Import dataset #VERANDEREN NAAR ONLINE LINK
+data$ARM = ifelse(data$Z==0,yes="Experimental", no="Control") #Z=1 means control treatment, Z=0 means experimental treatment 
+head(data)
+```
+
+The following variables are needed in the dataset:
+
+Z: indicating the treatment arm (with Z = 1: control and Z = 0: experimental)
+
+time: right-censored survival time 
+
+status: indication whether (status = 1) or not (status = 0) the patient had an event
+
+shift: possible time of treatment crossover from one treatment to the other, 0 if the patient did not cross over
+
+# Data 
+
+```{r message=FALSE, warning=FALSE,echo=F}
+data2 = data
+p = ggsurvplot(survfit(Surv(time, status) ~ ARM, data = data2),
+               title = "Overall survival",xlab = "Follow-up time (Days)", 
+               ylab = "Overall survival",xlim=c(0,60),ylim=c(0,1),
+               risk.table = F,cumevents = F,   break.time.by=5,
+               risk.table.height = 0.15, cumevents.height = 0.15,
+               risk.table.y.text = FALSE,
+               cumevents.y.text = FALSE,
+               fontsize = 5,
+               risk.table.title = "No. at Risk",
+               cumevents.title = "Cumulative No. of Events",conf.int=T)
+p$plot = p$plot + scale_x_continuous(breaks=seq(0,60,5))
+p
+```
+
+Adding an indicator for crossover 
+
+```{r message=FALSE, warning=FALSE}
+data$CO.indicator = ifelse(data$shift>0,yes="Yes",no="No") #Variable to indicate whether or not the patient crossed over from one treatment to the other
+table(data$ARM)
+table(data$ARM,data$CO.indicator)
+```
+
+Patient pathway plot
+
+```{r message=FALSE, warning=FALSE,echo=F}
+data.control = subset(data,ARM=="Control")
+data.control$control.start  = 0 
+data.control$control.end = ifelse(data.control$CO.indicator=="Yes", yes = data.control$shift, no = data.control$time)
+data.control$exp.start = ifelse(data.control$CO.indicator=="Yes", yes = data.control$shift, no = NA)
+data.control$exp.end = ifelse(data.control$CO.indicator=="Yes", yes = data.control$time, no = NA)
+data.control = data.control[order(data.control$control.end),]
+data.control$id2 = 1:dim(data.control)[1]
+
+data.exp = subset(data,ARM=="Experimental")
+data.exp$exp.start  = 0 
+data.exp$exp.end = ifelse(data.exp$CO.indicator=="Yes", yes = data.exp$shift, no = data.exp$time)
+data.exp$control.start = ifelse(data.exp$CO.indicator=="Yes", yes = data.exp$shift, no = NA)
+data.exp$control.end = ifelse(data.exp$CO.indicator=="Yes", yes = data.exp$time, no = NA)
+data.exp = data.exp[order(data.exp$exp.end),]
+data.exp$id2 = 1:dim(data.exp)[1]
+
+data.plot = rbind(data.exp,data.control)
+data.plot$event.time = ifelse(data.plot$status==1,yes=data.plot$time, no=NA)
+
+p = ggplot(data=data.plot)
+p = p + geom_segment(aes(x=0, xend=time, y=id2, yend=id2, color='No treatment'))
+#Control treatment 
+p = p  +geom_segment(aes(x=control.start, xend=control.end, y=id2, yend=id2,color='Control'))
+#Experimental treatment
+p = p  +geom_segment(aes(x=exp.start, xend=exp.end, y=id2, yend=id2,color='Experimental'))
+#Events 
+p = p + geom_point(aes(x=event.time, y=id2,color='Event'), cex=0.5) 
+#theme
+p = p + facet_grid(.~ ARM)
+p = p + labs(x = "Follow-up time", y = "Patient")
+p = p + scale_color_manual(breaks=c('Control','Experimental','No treatment','Event'),
+                           values=c('Control'='darkgreen','Experimental'='blue','No treatment'='grey85','Event'='red'))
+p   
+```
+
+
+# Data analysis on Overall Survival endpoint 
+
+## Treatment-policy estimand
+
+```{r message=FALSE, warning=FALSE,echo=F}
+output = aalen(Surv(time, status) ~ const(Z), data = data) 
+summary(output)
+```
+
+### Wald type standard error and confidence interval
+
+```{r message=FALSE, warning=FALSE,echo=F}
+summary(output)
+p.value = coefficients(output)["const(Z)","P-val"]
+```
+
+
+```{r message=FALSE, warning=FALSE,echo=F}
+beta = output$gamma[1]
+se.beta = sqrt(output$robvar.gamma[1,1])
+times = output$cum[,"time"]
+t = tail(times,1) #change this if you want the relative risk to be calculated at a different day 
+RR = exp(beta*t)
+SE.RR = se.beta*t*RR
+LB = coefficients(output)["const(Z)","lower2.5%"]
+UB =coefficients(output)["const(Z)","upper97.5%"]
+
+results = data.frame(Estimand = "Treatment policy", Estimator = "Additive Hazards Model", Measure ="beta",Value = beta,SE.type = "Wald",SE = se.beta,p = p.value ,LB = LB,UB =UB, stringsAsFactors = FALSE )
+results = results %>% dplyr::mutate_if(is.numeric, round,digits=3)
+results
+```
+
+
+```{r message=FALSE, warning=FALSE,echo=F}
+RR.LB = exp(LB*t)
+RR.UB = exp(UB*t)
+results = rbind(results,data.frame(Estimand = "Treatment policy", Estimator = "Additive Hazards Model", Measure ="Relative risk of surviving (exp. vs control)",Value = RR,SE.type = "Wald",SE = SE.RR,p = p.value ,LB = RR.LB,UB =RR.UB, stringsAsFactors = FALSE ))
+results = results %>% dplyr::mutate_if(is.numeric, round,digits=3)
+results
+```
+
+### Score type standard error and confidence interval
+
+Estimate $\beta$ by minimizing the score equations
+
+```{r message=FALSE, warning=FALSE}
+hazards = hazards.marginal(data)
+beta = beta.estimate.itt(data=data,lower=-0.01,upper=0.01,hazards=hazards) #the lower and upper bounds can be adjusted if no solution is found within the specified interval
+beta
+```
+
+
+
+Now we estimate the p-value
+
+
+```{r message=FALSE, warning=FALSE}
+fit.ivsacim = ivsacim(time=data$time, event=data$status, instrument=data$Z, IV_valid = TRUE, treatment_init=data$Z, treatment_shift_time=data$shift ,n_sim = 1000)
+fit.ivsacim.by_prod = fit.ivsacim$by_prod
+stime = fit.ivsacim$stime
+ 
+  
+p.value = p.itt.score(fit.ivsacim.by_prod=fit.ivsacim.by_prod,data=data,stime=stime,hazards=hazards)
+p.value
+```
+
+SE for $\beta$:
+
+
+```{r message=FALSE, warning=FALSE}
+beta.se = beta.itt.se.function(fit.ivsacim.by_prod=fit.ivsacim.by_prod,data=data,beta.est=beta,hazards=hazards)
+beta.se
+```
+
+
+
+Now we determine a 95% CI by minimising the quadratic difference between the p-value and 5%
+
+```{r message=FALSE, warning=FALSE}
+LB = beta.bound.itt(lower=beta-10*beta.se,upper=beta,fit.ivsacim.by_prod=fit.ivsacim.by_prod,data=data,stime=stime,hazards=hazards,p.value=0.05)
+UB = beta.bound.itt(lower=beta,upper=beta+10*beta.se,fit.ivsacim.by_prod=fit.ivsacim.by_prod,data=data,stime=stime,hazards=hazards,p.value=0.05)
+```
+
+
+```{r message=FALSE, warning=FALSE,echo=F}
+results = rbind(results,data.frame(Estimand = "Treatment policy", Estimator = "Additive Hazards Model", Measure ="beta",Value = beta,SE.type = "Score",SE = beta.se,p = p.value ,LB = LB,UB = UB, stringsAsFactors = FALSE ))
+
+times = as.numeric(stime)
+RR = exp(beta*tail(times,1))
+SE.RR = beta.se*tail(times,1)*RR
+
+t = tail(times,1)
+RR.LB = exp(LB*t)
+RR.UB = exp(UB*t)
+results = rbind(results,data.frame(Estimand = "Treatment policy", Estimator = "Additive Hazards Model", Measure ="Relative risk of surviving (exp. vs control)",Value = RR,SE.type = "Score",SE = SE.RR,p = p.value ,LB = RR.LB,UB =RR.UB,stringsAsFactors = FALSE ))
+results = results %>% dplyr::mutate_if(is.numeric, round,digits=3)
+results
+```
+
+
+### Using Instrumental Variables (g-estimation): method by Ying and Tchetgen Tchetgen 2022 
+
+(No baseline covariates are included)
+
+```{r message=FALSE, warning=FALSE}
+library(ivsacim) #install this package first if needed
+fit.ivsacim <- ivsacim(time=data$time, event=data$status, instrument=data$Z, IV_valid = TRUE, treatment_init=data$Z, treatment_shift_time=data$shift,n_sim = 1000)
+summary(fit.ivsacim)
+p.value = summary(fit.ivsacim)$pval_beta_D
+```
+
+Hypothetical survival risk ratio over time: 
+
+
+```{r message=FALSE, warning=FALSE,echo=FALSE}
+obj <- fit.ivsacim
+B_D <- obj$B_D
+B_D_se <- obj$B_D_se
+beta = obj$beta_D
+beta_se = obj$beta_D_se
+stime = obj$stime
+plot.data = data.frame("Time"=stime,"exp.beta"=exp(beta*stime),"exp.beta.LB" = exp((beta + 1.96 * beta_se)*stime),
+                       "exp.beta.UB" = exp((beta - 1.96 * beta_se)*stime),"exp.B_D"=exp(B_D),"exp.B_D.LB"=exp(c(B_D + 1.96 * B_D_se)), "exp.B_D.UB"=exp(c(B_D - 1.96 * B_D_se)))
+
+colors <- c("Time-varying effect dB(t)" = "blue", "Constant effect beta" = "red")
+
+p = ggplot(data=plot.data,aes(x=Time,y=exp.beta,color="Constant effect beta"))+ geom_line(aes(color="Constant effect beta")) #+geom_point(col="red")
+p = p + geom_line(aes(x=Time,y=exp.beta.LB,color="Constant effect beta"), lty = 2)
+p = p + geom_line(aes(x=Time,y=exp.beta.UB,color="Constant effect beta"), lty = 2)
+p = p +ggtitle("Hypothetical estimand") 
+p = p + xlab("Time") + ylab("Counterfactual survival ratio")
+p = p + theme(plot.title = element_text(hjust = 0.5),plot.subtitle = element_text(hjust = 0.5))
+p = p +  geom_hline(yintercept = 1, lwd=0.8, col="black")
+
+p = p + geom_line(aes(x=Time,y=exp.B_D,color="Time-varying effect dB(t)"))
+p = p + geom_line(aes(x=Time,y=exp.B_D.LB,color="Time-varying effect dB(t)"),lty = 2)
+p = p + geom_line(aes(x=Time,y=exp.B_D.UB,color="Time-varying effect dB(t)"),lty = 2)
+p
+
+```
+
+
+```{r message=FALSE, warning=FALSE,echo=F}
+LB = fit.ivsacim$beta_D - 1.96*fit.ivsacim$beta_D_se
+UB =fit.ivsacim$beta_D+ 1.96*fit.ivsacim$beta_D_se
+results = rbind(results,data.frame(Estimand = "Hypothetical estimand", Estimator = "ivsacim", Measure ="beta",Value = fit.ivsacim$beta_D,SE.type = "Wald",SE = fit.ivsacim$beta_D_se,p=p.value ,LB = LB,UB =UB, stringsAsFactors = FALSE ))
+
+RR = tail(exp(fit.ivsacim$beta_D*fit.ivsacim$stime),1)
+SE.RR = fit.ivsacim$beta_D_se*tail(stime,1)*exp(fit.ivsacim$beta_D*tail(stime,1))
+beta = fit.ivsacim$beta_D
+se.beta = fit.ivsacim$beta_D_se
+t = tail(stime,1)
+RR.LB = exp(LB*t)
+RR.UB = exp(UB*t)
+results = rbind(results,data.frame(Estimand = "Hypothetical estimand", Estimator = "ivsacim", Measure ="Relative risk of surviving (always exp. vs always control)",Value = RR,SE.type = "Wald",SE = SE.RR,p=p.value,LB =RR.LB ,UB =RR.UB , stringsAsFactors = FALSE ))
+results = results %>% dplyr::mutate_if(is.numeric, round,digits=3)
+results
+```
+
+
+#### Score (Sandwich estimator)
+
+
+$\beta$ estimate: 
+
+```{r message=FALSE, warning=FALSE}
+fit.ivsacim.by_prod = fit.ivsacim$by_prod
+stime = fit.ivsacim$stime
+beta = beta.estimate.iv.score(fit.ivsacim.by_prod=fit.ivsacim.by_prod,data=data,lower=-0.01,upper=0.01,stime=stime) #the lower and upper bounds can be adjusted if no solution is found in the specified interval
+beta
+```
+
+
+Next, we estimate the SE of $\beta$ using the Sandwich estimator
+
+
+```{r message=FALSE, warning=FALSE}
+beta.se = beta.iv.se(fit.ivsacim.by_prod=fit.ivsacim.by_prod,data=data,beta.est=fit.ivsacim.by_prod$beta_D) 
+beta.se
+```
+
+Now we estimate the p-value
+
+
+
+```{r message=FALSE, warning=FALSE}
+p.value = p.iv.score(fit.ivsacim.by_prod=fit.ivsacim.by_prod,data=data,stime=stime)
+p.value
+```
+
+Now we determine a 95% CI by minimising the quadratic difference between the p-value and 5%
+
+
+
+```{r message=FALSE, warning=FALSE}
+LB = beta.bound.iv(lower=beta-10*beta.se,upper=beta,fit.ivsacim.by_prod=fit.ivsacim.by_prod,data=data,stime=stime,p.value=0.05)
+UB = beta.bound.iv(lower=beta,upper=beta+10*beta.se,fit.ivsacim.by_prod=fit.ivsacim.by_prod,data=data,stime=stime,p.value=0.05)
+```
+
+
+
+```{r message=FALSE, warning=FALSE,echo=F}
+results = rbind(results,data.frame(Estimand = "Hypothetical estimand", Estimator = "ivsacim", Measure ="beta",Value = beta, SE.type = "Score",SE = beta.se,p=p.value ,LB = LB,UB =UB , stringsAsFactors = FALSE ))
+RR = tail(exp(beta*fit.ivsacim$stime),1)
+SE.RR = beta.se*tail(stime,1)*exp(beta*tail(stime,1))
+se.beta = beta.se
+t = tail(stime,1)
+RR.LB = exp((LB)*t)
+RR.UB = exp((UB)*t)
+results = rbind(results,data.frame(Estimand = "Hypothetical estimand",  Estimator = "ivsacim", Measure ="Relative risk of surviving (always exp. vs always control)",Value = RR, SE.type = "Score",SE = SE.RR,p=p.value,LB =RR.LB ,UB =RR.UB , stringsAsFactors = FALSE ))
+results = results %>% dplyr::mutate_if(is.numeric, round,digits=3)
+results
+``` 
+
+#### Hypothetical survival curve
+
+```{r message=FALSE, warning=FALSE,echo=F}
+#T.formula = Surv(time, status) ~ 1 #use this if you dont want to use baseline covariates 
+T.formula = Surv(time, status) ~ gender + age
+hypo.surv.cox = hyp.surv.cox(beta=beta,times=stime,data=data,T.formula = T.formula) #T.formula: formula for the Cox model
+y.control=surv.times(subset(data,Z==1),stime)
+y.exp=surv.times(subset(data,Z==0),stime) 
+overview = data.frame("time"=c(0,stime), "y.control"=c(1,y.control),"y.control.se"=NA, "y.exp"=c(1,y.exp), "y.exp.se"=NA,"hypo.surv" = c(1,hypo.surv.cox), stringsAsFactors = FALSE)
+plot.hyp.surv(overview)
+```
+
+### One-step estimator 
+
+
+1. Initial estimate for $\beta$ using the IV estimator of Ying and Tchetgen Tchetgen 
+
+```{r message=FALSE, warning=FALSE}
+library(ivsacim)
+fit.ivsacim <- ivsacim(time=data$time, event=data$status, instrument=data$Z, IV_valid = TRUE, treatment_init=data$Z, treatment_shift_time=data$shift,n_sim = 1000)
+summary(fit.ivsacim)
+beta.start = fit.ivsacim$beta_D
+stime = fit.ivsacim$stime
+```
+
+2. Calculate score function for every patient, evaluated in the inital $\beta$ estimate and take the sample average. 
+
+
+```{r message=FALSE, warning=FALSE}
+#Z.formula=Z~1 #use this if you dont want to condition on baseline covariates
+#L.values=c() #use this if you dont want to condition on baseline covariates
+Z.formula=Z~gender+age #change the names of the baseline covariates 
+L.values=c("gender","age") #change the names of the baseline covariates 
+
+fit.ivsacim.by_prod = fit.ivsacim$by_prod
+stime = fit.ivsacim$stime
+#Sample average of the score function, evaluated in beta.start
+av = av.function(fit.ivsacim.by_prod = fit.ivsacim.by_prod,data=data,beta.start=beta.start,stime=stime ,Z.formula=Z.formula,L.values=L.values)
+av
+```
+
+3. Calculate the derivative of the score function for every patient, evaluated in the inital $\beta$ estimate and take the sample average.
+
+```{r message=FALSE, warning=FALSE,echo=F}
+fit.ivsacim.by_prod = fit.ivsacim$by_prod
+stime = fit.ivsacim$stime
+#Sample average of the derivative score function, evaluated in beta.start
+av.deriv = av.deriv.function(fit.ivsacim.by_prod = fit.ivsacim.by_prod,data=data,beta.start=beta.start,stime=stime,Z.formula=Z.formula,L.values=L.values)
+av.deriv
+```
+
+4. Update the initial $\beta$ estimate 
+
+```{r message=FALSE, warning=FALSE}
+beta.update = beta.start - av/av.deriv
+beta.update
+beta = beta.update
+```
+
+
+Now we estimate the p-value
+
+```{r message=FALSE, warning=FALSE}
+p.value = p.score(fit.ivsacim.by_prod=fit.ivsacim.by_prod,data=data,stime=stime,Z.formula=Z.formula,L.values=L.values)
+p.value
+```
+
+SE for $\beta$:
+
+
+```{r message=FALSE, warning=FALSE}
+beta.se = beta.se.function(fit.ivsacim.by_prod=fit.ivsacim.by_prod,data=data,beta.est=beta,Z.formula=Z.formula,L.values=L.values)
+beta.se
+```
+
+Now we determine a 95% CI by minimising the quadratic difference between the p-value and 5%
+
+
+```{r message=FALSE, warning=FALSE}
+LB = beta.bound(lower=beta-10*beta.se,upper=beta,fit.ivsacim.by_prod=fit.ivsacim.by_prod,data=data,stime=stime,p.value=0.05,Z.formula=Z.formula,L.values=L.values)
+UB = beta.bound(lower=beta,upper=beta+10*beta.se,fit.ivsacim.by_prod=fit.ivsacim.by_prod,data=data,stime=stime,p.value=0.05,Z.formula=Z.formula,L.values=L.values)
+```
+
+```{r message=FALSE, warning=FALSE,echo=FALSE}
+beta = beta
+beta_se = beta.se
+plot.data = data.frame("Time"=stime,"exp.beta"=exp(beta*stime),"exp.beta.LB" = exp((beta + 1.96 * beta_se)*stime),
+                       "exp.beta.UB" = exp((beta - 1.96 * beta_se)*stime))
+
+p = ggplot(data=plot.data,aes(x=Time,y=exp.beta))+ geom_line(col="red") #+geom_point(col="red")
+p = p + geom_line(aes(x=Time,y=exp.beta.LB), lty = 2,col="red")
+p = p + geom_line(aes(x=Time,y=exp.beta.UB), lty = 2, col="red")
+p = p +ggtitle("Hypothetical estimand") 
+p = p + xlab("Time") + ylab("Counterfactual survival ratio")
+p = p + theme(plot.title = element_text(hjust = 0.5),plot.subtitle = element_text(hjust = 0.5))
+p = p +  geom_hline(yintercept = 1, lwd=0.8, col="black")
+p
+```
+
+
+```{r message=FALSE, warning=FALSE,echo=F}
+results = rbind(results,data.frame(Estimand = "Hypothetical estimand", Estimator = "Onestep", Measure ="beta",Value = beta, SE.type = "Score",SE = beta.se,p=p.value ,LB = LB,UB =UB , stringsAsFactors = FALSE ))
+RR = tail(exp(beta*fit.ivsacim$stime),1)
+SE.RR = beta.se*tail(stime,1)*exp(beta*tail(stime,1))
+se.beta = beta.se
+t = tail(stime,1)
+RR.LB = exp(LB*t)
+RR.UB = exp(UB*t)
+results = rbind(results,data.frame(Estimand = "Hypothetical estimand", Estimator = "Onestep", Measure ="Relative risk of surviving (always exp. vs always control)",Value = RR, SE.type = "Score",SE = SE.RR,p=p.value,LB =RR.LB ,UB =RR.UB , stringsAsFactors = FALSE ))
+results = results %>% dplyr::mutate_if(is.numeric, round,digits=3)
+results
+```
+
+#### Hypothetical survival curve
+
+```{r message=FALSE, warning=FALSE,echo=F}
+hypo.surv.cox = hyp.surv.cox(beta=beta,times=stime,data=data,T.formula = T.formula) #T.formula: formula for the Cox model
+y.control=surv.times(subset(data,Z==1),stime)
+y.exp=surv.times(subset(data,Z==0),stime) 
+overview = data.frame("time"=c(0,stime), "y.control"=c(1,y.control),"y.control.se"=NA, "y.exp"=c(1,y.exp), "y.exp.se"=NA,"hypo.surv" = c(1,hypo.surv.cox), stringsAsFactors = FALSE)
+plot.hyp.surv(overview)
+```
+
+### One-step estimator with hazard
+
+1. Initial estimate for $\beta$ using the IV estimator of Ying and Tchetgen Tchetgen 
+
+```{r message=FALSE, warning=FALSE}
+library(ivsacim)
+fit.ivsacim <- ivsacim(time=data$time, event=data$status, instrument=data$Z, IV_valid = TRUE, treatment_init=data$Z, treatment_shift_time=data$shift,n_sim = 1000)
+summary(fit.ivsacim)
+beta.start = fit.ivsacim$beta_D
+stime = fit.ivsacim$stime
+```
+
+2. Calculate score function for every patient, evaluated in the inital $\beta$ estimate and take the sample average. 
+
+
+```{r message=FALSE, warning=FALSE}
+
+hazards = hazards.conditional(data,T.formula = T.formula)  
+
+fit.ivsacim.by_prod = fit.ivsacim$by_prod
+stime = fit.ivsacim$stime
+#Sample average of the score function, evaluated in beta.start
+av = av.function.hazard(fit.ivsacim.by_prod = fit.ivsacim.by_prod,data=data,beta.start=beta.start,stime=stime ,Z.formula=Z.formula,L.values=L.values,hazards = hazards)
+av
+```
+
+
+3. Calculate the derivative of the score function for every patient, evaluated in the inital $\beta$ estimate and take the sample average.
+
+```{r message=FALSE, warning=FALSE,echo=F}
+#Sample average of the derivative score function, evaluated in beta.start
+av.deriv = av.deriv.function.hazard(fit.ivsacim.by_prod = 
+fit.ivsacim.by_prod,data=data,beta.start=beta.start,stime=stime,Z.formula=Z.formula,L.values=L.values,hazards=hazards)
+av.deriv
+```
+
+4. Update the initial $\beta$ estimate 
+
+```{r message=FALSE, warning=FALSE}
+beta.update = beta.start - av/av.deriv
+beta.update
+beta = beta.update
+```
+
+
+Now we estimate the p-value
+
+```{r message=FALSE, warning=FALSE}
+p.value = p.score.hazard(fit.ivsacim.by_prod=fit.ivsacim.by_prod,data=data,stime=stime,Z.formula=Z.formula,L.values=L.values,hazards=hazards)
+p.value
+```
+
+SE for $\beta$:
+
+
+```{r message=FALSE, warning=FALSE}
+beta.se = beta.se.function.hazard(fit.ivsacim.by_prod=fit.ivsacim.by_prod,data=data,beta.est=beta,Z.formula=Z.formula,L.values=L.values,hazards=hazards)
+beta.se
+```
+
+
+Now we determine a 95% CI by minimising the quadratic difference between the p-value and 5%
+
+
+
+```{r message=FALSE, warning=FALSE}
+LB = beta.bound.hazard(lower=beta-10*beta.se,upper=beta,fit.ivsacim.by_prod=fit.ivsacim.by_prod,data=data,stime=stime,p.value=0.05,Z.formula=Z.formula,L.values=L.values,hazards = hazards)
+UB = beta.bound.hazard(lower=beta,upper=beta+10*beta.se,fit.ivsacim.by_prod=fit.ivsacim.by_prod,data=data,stime=stime,p.value=0.05,Z.formula=Z.formula,L.values=L.values,hazards = hazards)
+```
+
+
+```{r message=FALSE, warning=FALSE,echo=FALSE}
+beta = beta
+beta_se = beta.se
+plot.data = data.frame("Time"=stime,"exp.beta"=exp(beta*stime),"exp.beta.LB" = exp((beta + 1.96 * beta_se)*stime),
+                       "exp.beta.UB" = exp((beta - 1.96 * beta_se)*stime))
+
+p = ggplot(data=plot.data,aes(x=Time,y=exp.beta))+ geom_line(col="red") #+geom_point(col="red")
+p = p + geom_line(aes(x=Time,y=exp.beta.LB), lty = 2,col="red")
+p = p + geom_line(aes(x=Time,y=exp.beta.UB), lty = 2, col="red")
+p = p +ggtitle("Hypothetical estimand") 
+p = p + xlab("Time") + ylab("Counterfactual survival ratio")
+p = p + theme(plot.title = element_text(hjust = 0.5),plot.subtitle = element_text(hjust = 0.5))
+p = p +  geom_hline(yintercept = 1, lwd=0.8, col="black")
+p
+```
+
+```{r message=FALSE, warning=FALSE,echo=F}
+results = rbind(results,data.frame(Estimand = "Hypothetical estimand", Estimator = "Onestep with hazard", Measure ="beta",Value = beta, SE.type = "Score",SE = beta.se,p=p.value ,LB = LB,UB =UB , stringsAsFactors = FALSE ))
+RR = tail(exp(beta*fit.ivsacim$stime),1)
+SE.RR = beta.se*tail(stime,1)*exp(beta*tail(stime,1))
+se.beta = beta.se
+t = tail(stime,1)
+RR.LB = exp(LB*t)
+RR.UB = exp(UB*t)
+results = rbind(results,data.frame(Estimand = "Hypothetical estimand", Estimator = "Onestep with hazard", Measure ="Relative risk of surviving (always exp. vs always control)",Value = RR, SE.type = "Score",SE = SE.RR,p=p.value,LB =RR.LB ,UB =RR.UB , stringsAsFactors = FALSE ))
+results = results %>% dplyr::mutate_if(is.numeric, round,digits=3)
+results
+```
+
+#### Hypothetical survival curve
+
+```{r message=FALSE, warning=FALSE,echo=F}
+hypo.surv.cox = hyp.surv.cox(beta=beta,times=stime,data=data,T.formula = T.formula) #T.formula: formula for the Cox model
+y.control=surv.times(subset(data,Z==1),stime)
+y.exp=surv.times(subset(data,Z==0),stime) 
+overview = data.frame("time"=c(0,stime), "y.control"=c(1,y.control),"y.control.se"=NA, "y.exp"=c(1,y.exp), "y.exp.se"=NA,"hypo.surv" = c(1,hypo.surv.cox), stringsAsFactors = FALSE)
+plot.hyp.surv(overview)
+```
+
+#### Plot of the results
+
+
+
+```{r message=FALSE, warning=FALSE,echo=F}
+
+plot.results = subset(results,  Measure %in% c("beta","Relative risk of surviving (exp. vs control)","Relative risk of surviving (always exp. vs always control)")&SE.type%in%c("Score"))
+plot.results$Measure = ifelse(plot.results$Measure=="beta",yes="Beta",no = "Relative risk")
+plot.results$Line = ifelse(plot.results$Measure=="Beta",yes=0,no=1)
+
+
+plot.results$Estimator = ifelse(plot.results$Estimand == "Treatment policy",yes="Treatment policy",no=plot.results$Estimator)
+plot.results$Estimand = ifelse(plot.results$Estimand=="Hypothetical estimand",yes="Hypothetical",no=plot.results$Estimand)
+plot.results$Estimand = factor(plot.results$Estimand,levels = c("Treatment policy","Hypothetical"))
+
+plot.results$Estimator = factor(plot.results$Estimator,levels = rev(c("Treatment policy", "ivsacim", "Onestep", "Onestep with hazard")))
+
+
+p = ggplot(plot.results, aes(Estimator,Value)) 
+p = p + geom_point(aes(color=Measure),size=2) 
+p = p + geom_errorbar(aes(ymin = LB, ymax = UB,color=Measure),size=1.5,width=0.5)
+p = p + ggtitle("Results on overall survival endpoint")
+p = p + facet_grid(Estimand~ Measure, scales = "free") 
+p = p + geom_hline(data = plot.results, aes(yintercept=Line),size = 0.5,colour = "black")
+p = p + theme(axis.line = element_line(size = 0.5),plot.title = element_text(hjust = 0.5,size = 16),axis.title.y = element_blank(),
+              axis.title.x = element_blank(),
+              axis.text.x= element_text(size=10),
+              axis.text.y= element_text(size = 12),legend.position = "none",strip.text.y = element_text(angle = 360,size=12),strip.text.x = element_text(size=12))
+p = p + coord_flip() 
+p
+```
