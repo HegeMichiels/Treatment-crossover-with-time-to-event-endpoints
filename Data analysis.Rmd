@@ -15,8 +15,8 @@ library(dplyr)
 ```
 
 ```{r message=FALSE, warning=FALSE,echo=F}
-source("~/OneDrive - UGent/Crossover/R-code/Functions.R") #Import the "Functions.R" file #VERANDEREN NAAR ONLINE LINK
-data <- read.delim("~/OneDrive - UGent/Crossover/R-code/data.txt") #Import dataset #VERANDEREN NAAR ONLINE LINK
+source("~/OneDrive - UGent/Crossover/R-code/Functions.R") #Import the "Functions.R" file 
+data <- read.delim("~/OneDrive - UGent/Crossover/R-code/data.txt") #Import dataset 
 data$ARM = ifelse(data$Z==0,yes="Experimental", no="Control") #Z=1 means control treatment, Z=0 means experimental treatment 
 head(data)
 ```
